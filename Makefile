@@ -7,6 +7,3 @@ bpf-map: bpf-map.go
 
 clean:
 	go clean
-
-install:
-	$(INSTALL) -m 0755 -t $(DESTDIR)$(BINDIR) bpf-map
