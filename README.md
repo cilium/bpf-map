@@ -2,7 +2,7 @@
 
 A small tool to generically introspect BPF maps without requiring to
 be aware of the specific data structures stored inside. Can print the
-metadata of the map ot its contents in hexadecimal form.
+metadata of the map or its contents in hexadecimal form.
 
 ## Usage
 
