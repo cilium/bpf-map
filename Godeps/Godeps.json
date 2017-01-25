@@ -1,15 +1,15 @@
 {
 	"ImportPath": "github.com/cilium/bpf-map",
 	"GoVersion": "go1.6",
-	"GodepVersion": "v74",
+	"GodepVersion": "v75",
 	"Deps": [
 		{
 			"ImportPath": "github.com/cilium/cilium/common",
-			"Rev": "61736356998523fd581717f1582ba5f123886fb2"
+			"Rev": "a33ef95a7596d950f8dee12e7fe307d40d31392b"
 		},
 		{
 			"ImportPath": "github.com/cilium/cilium/pkg/bpf",
-			"Rev": "61736356998523fd581717f1582ba5f123886fb2"
+			"Rev": "a33ef95a7596d950f8dee12e7fe307d40d31392b"
 		},
 		{
 			"ImportPath": "github.com/fatih/color",
@@ -47,6 +47,34 @@
 		{
 			"ImportPath": "golang.org/x/sys/unix",
 			"Rev": "50c6bc5e4292a1d4e65c6e9be5f53be28bcbe28e"
+		},
+		{
+			"ImportPath": "github.com/cilium/cilium/vendor/github.com/fatih/color",
+			"Rev": "a33ef95a7596d950f8dee12e7fe307d40d31392b"
+		},
+		{
+			"ImportPath": "github.com/cilium/cilium/vendor/github.com/op/go-logging",
+			"Rev": "a33ef95a7596d950f8dee12e7fe307d40d31392b"
+		},
+		{
+			"ImportPath": "github.com/cilium/cilium/vendor/github.com/mattn/go-colorable",
+			"Rev": "a33ef95a7596d950f8dee12e7fe307d40d31392b"
+		},
+		{
+			"ImportPath": "github.com/cilium/cilium/vendor/github.com/mattn/go-isatty",
+			"Rev": "a33ef95a7596d950f8dee12e7fe307d40d31392b"
+		},
+		{
+			"ImportPath": "github.com/cilium/cilium/vendor/golang.org/x/sys/unix",
+			"Rev": "a33ef95a7596d950f8dee12e7fe307d40d31392b"
+		},
+		{
+			"ImportPath": "github.com/cilium/cilium/vendor/github.com/google/gopacket",
+			"Rev": "a33ef95a7596d950f8dee12e7fe307d40d31392b"
+		},
+		{
+			"ImportPath": "github.com/cilium/cilium/vendor/github.com/google/gopacket/layers",
+			"Rev": "a33ef95a7596d950f8dee12e7fe307d40d31392b"
 		}
 	]
 }
