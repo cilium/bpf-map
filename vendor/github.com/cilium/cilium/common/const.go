@@ -1,5 +1,4 @@
-//
-// Copyright 2016 Authors of Cilium
+// Copyright 2016-2017 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,25 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//
+
 package common
 
-var (
-	// Version number needs to be var since we override the value when building
-	Version = "dev"
-)
-
 const (
-	// CiliumPath is the path where cilium operational files are running.
-	CiliumPath    = "/var/run/cilium"
-	DefaultLibDir = "/usr/lib/cilium"
-	CiliumUIPath  = DefaultLibDir + "/ui"
-	// CiliumSock is the cilium socket for the communication between the daemon and cilium client.
-	CiliumSock = CiliumPath + "/cilium.sock"
-	// RFC3339Milli is the RFC3339 with milliseconds for the default timestamp format
-	// log files.
-	RFC3339Milli = "2006-01-02T15:04:05.000Z07:00"
-
 	// Consul dedicated constants
 
 	// OperationalPath is the base path to store the operational details in consul.
@@ -46,7 +30,7 @@ const (
 	MaxSetOfLabels = uint32(0xFFFF)
 	// LastFreeServiceIDKeyPath is the path where the Last free UUID is stored in consul.
 	LastFreeServiceIDKeyPath = OperationalPath + "/Services/LastUUID"
-	// ServiceKeyPath is the base path where services are stored in consul.
+	// ServicesKeyPath is the base path where services are stored in consul.
 	ServicesKeyPath = OperationalPath + "/Services/SHA256SUMServices"
 	// ServiceIDKeyPath is the base path where the IDs are stored in consul.
 	ServiceIDKeyPath = OperationalPath + "/Services/IDs"
@@ -57,8 +41,6 @@ const (
 
 	// Miscellaneous dedicated constants
 
-	// GlobalLabelPrefix is the default root path for the policy.
-	GlobalLabelPrefix = "io.cilium"
 	// CiliumLabelSource is the default label source for the labels read from containers.
 	CiliumLabelSource = "cilium"
 	// K8sLabelSource is the default label source for the labels read from kubernetes.
@@ -66,21 +48,23 @@ const (
 	// K8sAnnotationName is the annotation name used for the cilium policy name in the
 	// kubernetes network policy.
 	K8sAnnotationName = "io.cilium.name"
-	// K8sLabelPrefix is the default prefix used when parsing labels that don't have
-	// the GlobalLabelPrefix in kubernetes.
+	// K8sLabelPrefix is the default prefix used to represent kubernetes labels
 	K8sLabelPrefix = "io.cilium.k8s."
+	// K8sDefaultParent is the default prefix for network policies received from
+	// kubernetes.
+	K8sDefaultParent = "io.cilium.k8s"
 	// K8sPodNamespaceLabel is the label used in kubernetes containers to specify
 	// which namespace they belong to.
 	K8sPodNamespaceLabel = "io.kubernetes.pod.namespace"
 	// K8sAnnotationParentName is the annotation name used for the cilium policy
 	// parent name in the kubernetes network policy.
 	K8sAnnotationParentName = "io.cilium.parent"
-	// K8s environment variable label
+	// K8sEnvNodeNameSpec is the environment variable label.
 	K8sEnvNodeNameSpec = "K8S_NODE_NAME"
-	// Label source for reserved types
+	// ReservedLabelSource is the label source for reserved types.
 	ReservedLabelSource = "reserved"
-	// Label used to represent the reserved source
-	ReservedLabelKey = GlobalLabelPrefix + "." + ReservedLabelSource
+	// ReservedLabelKey is the label used to represent the reserved source.
+	ReservedLabelKey = "io.cilium." + ReservedLabelSource
 	// EndpointsPerHost is the maximum number of endpoints allowed per host. It should
 	// represent the same number of IPv6 addresses supported on each node.
 	EndpointsPerHost = 0xFFFF
@@ -92,7 +76,7 @@ const (
 	// CHeaderFileName is the name of the C header file for BPF programs for a
 	// particular endpoint.
 	CHeaderFileName = "lxc_config.h"
-	// Name of the header file used for bpf_netdev.c and bpf_overlay.c
+	// NetdevHeaderFileName is the name of the header file used for bpf_netdev.c and bpf_overlay.c.
 	NetdevHeaderFileName = "netdev_config.h"
 	// CiliumCHeaderPrefix is the prefix using when printing/writing an endpoint in a
 	// base64 form.

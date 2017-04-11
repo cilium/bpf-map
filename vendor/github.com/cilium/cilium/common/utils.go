@@ -1,5 +1,4 @@
-//
-// Copyright 2016 Authors of Cilium
+// Copyright 2016-2017 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,18 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//
+
 package common
 
 import (
 	"bufio"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	l "github.com/op/go-logging"
 )
@@ -77,12 +76,11 @@ func SetupLOG(logger *l.Logger, logLevel string) {
 	switch os.Getenv("INITSYSTEM") {
 	case "SYSTEMD":
 		fileFormat = l.MustStringFormatter(
-			`%{level:.4s} %{id:03x} %{shortfunc} > %{message}`)
+			`%{level:.4s} %{message}`)
 	default:
-		hostname, _ := os.Hostname()
 		fileFormat = l.MustStringFormatter(
-			`%{time:` + RFC3339Milli + `} ` + hostname +
-				` %{level:.4s} %{id:03x} %{shortfunc} > %{message}`)
+			`%{color}%{time:` + time.RFC3339 +
+				`} %{level:.4s} %{color:reset}%{message}`)
 	}
 
 	level, err := l.LogLevel(logLevel)
@@ -153,16 +151,4 @@ func GetCiliumVersionString(epCHeaderFilePath string) (string, error) {
 			return s, nil
 		}
 	}
-}
-
-func ParseHost(host string) (string, *net.TCPAddr, error) {
-	protoHost := strings.SplitN(host, "://", 2)
-	if len(protoHost) != 2 {
-		return "", nil, fmt.Errorf("invalid endpoint")
-	}
-	tcpAddr, err := net.ResolveTCPAddr(protoHost[0], protoHost[1])
-	if err == nil && tcpAddr.Port == 0 {
-		return "", nil, fmt.Errorf("invalid endpoint")
-	}
-	return protoHost[0], tcpAddr, err
 }

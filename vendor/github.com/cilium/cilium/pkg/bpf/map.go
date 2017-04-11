@@ -1,5 +1,4 @@
-//
-// Copyright 2016 Authors of Cilium
+// Copyright 2016-2017 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//
+
 package bpf
 
 /*
@@ -50,6 +49,8 @@ const (
 	MapTypeLRUHash
 	MapTypeLRUPerCPUHash
 	MapTypeLPMTrie
+	MapTypeArrayOfMaps
+	MapTypeHashOfMaps
 )
 
 func (t MapType) String() string {
@@ -76,6 +77,10 @@ func (t MapType) String() string {
 		return "LRU per-CPU hash"
 	case MapTypeLPMTrie:
 		return "Longest prefix match trie"
+	case MapTypeArrayOfMaps:
+		return "Array of maps"
+	case MapTypeHashOfMaps:
+		return "Hash of maps"
 	}
 
 	return "Unknown"
@@ -155,7 +160,7 @@ func GetMapInfo(pid int, fd int) (*MapInfo, error) {
 			info.ValueSize = uint32(value)
 		} else if n, err := fmt.Sscanf(line, "max_entries:\t%d", &value); n == 1 && err == nil {
 			info.MaxEntries = uint32(value)
-		} else if n, err := fmt.Sscanf(line, "map_flas:\t%i", &value); n == 1 && err == nil {
+		} else if n, err := fmt.Sscanf(line, "map_flags:\t%x", &value); n == 1 && err == nil {
 			info.Flags = uint32(value)
 		}
 	}
@@ -345,7 +350,7 @@ func (m *Map) Delete(key MapKey) error {
 	return DeleteElement(m.fd, key.GetKeyPtr())
 }
 
-// Delete all entries of a map by traversing the map and deleting individual
+// DeleteAll deletes all entries of a map by traversing the map and deleting individual
 // entries. Note that if entries are added while the taversal is in progress,
 // such entries may survive the deletion process.
 func (m *Map) DeleteAll() error {
