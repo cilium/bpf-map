@@ -19,6 +19,7 @@ Type:		Hash
 Key size:	4
 Value size:	104
 Max entries:	1024
+Flags:		0x0
 
 $ sudo bpf-map dump /sys/fs/bpf/tc/globals/cilium_lxc
 Key:

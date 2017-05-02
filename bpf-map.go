@@ -88,6 +88,6 @@ func infoMap(ctx *cli.Context) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Type:\t\t%s\nKey size:\t%d\nValue size:\t%d\nMax entries:\t%d\n",
-		m.MapType.String(), m.KeySize, m.ValueSize, m.MaxEntries)
+	fmt.Printf("Type:\t\t%s\nKey size:\t%d\nValue size:\t%d\nMax entries:\t%d\nFlags:\t\t%#x\n",
+		m.MapType.String(), m.KeySize, m.ValueSize, m.MaxEntries, m.Flags)
 }
