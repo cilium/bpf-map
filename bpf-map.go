@@ -28,7 +28,7 @@ func main() {
 	app := cli.NewApp()
 	app.Name = "bpf-map"
 	app.Usage = "Generic tool to introspect BPF maps"
-	app.UsageText = "bpf-map { dump | info } <map file>"
+	app.UsageText = "bpf-map { dump | info | update | remove } <map file>"
 	app.Version = "1.0"
 	app.Commands = []cli.Command{
 		{
