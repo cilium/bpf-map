@@ -1,20 +1,27 @@
 # bpf-map
 
-A small tool to generically introspect BPF maps without requiring to
-be aware of the specific data structures stored inside. Can print the
-metadata of the map or its contents in hexadecimal form.
+A small tool to generically introspect BPF maps without requiring to be aware
+of the specific data structures stored inside. Can print the metadata of the
+map or its contents in hexadecimal form.
 
 ## Install
+
+Install from source via `go get`:
 
 ```
 go get github.com/cilium/bpf-map
 ```
 
+Download the binary release:
+
+```
+curl -Ssl https://github.com/cilium/bpf-map/releases/download/v1.0/bpf-map -o bpf-map
+```
+
 ## Usage
 
 ```
-$ go build
-$ ./bpf-map dump /path/tomap
+$ bpf-map dump /sys/fs/bpf/tc/globals/path/map
 ```
 
 ## Example
