@@ -45,6 +45,20 @@ func main() {
 			ArgsUsage: "<map path>",
 			Action:    infoMap,
 		},
+		{
+			Name:      "update",
+			Aliases:   []string{"u"},
+			Usage:     "Update a map entry with keys and values in hex",
+			ArgsUsage: "<map path> <key> <value>",
+			Action:    updateMap,
+		},
+		{
+			Name:      "remove",
+			Aliases:   []string{"r"},
+			Usage:     "Remove a map entry (key in hex)",
+			ArgsUsage: "<map path> <key>",
+			Action:    deleteKey,
+		},
 	}
 
 	app.Run(os.Args)
@@ -90,4 +104,64 @@ func infoMap(ctx *cli.Context) {
 
 	fmt.Printf("Type:\t\t%s\nKey size:\t%d\nValue size:\t%d\nMax entries:\t%d\nFlags:\t\t%#x\n",
 		m.MapType.String(), m.KeySize, m.ValueSize, m.MaxEntries, m.Flags)
+}
+
+func updateMap(ctx *cli.Context) {
+	if len(ctx.Args()) < 3 {
+		cli.ShowCommandHelp(ctx, "update")
+		os.Exit(1)
+	}
+
+	path := ctx.Args().Get(0)
+	m, err := bpf.OpenMap(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to open map %s: %s\n", path, err)
+		os.Exit(1)
+	}
+
+	key, err := newByteValue(ctx.Args().Get(1), m.KeySize, m.ValueSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid key: %s\n", err)
+		os.Exit(1)
+	}
+
+	value, err := newByteValue(ctx.Args().Get(2), m.ValueSize, m.ValueSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid value: %s\n", err)
+		os.Exit(1)
+	}
+
+	if err := m.Update(key, value); err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to set key: %s\n", err)
+		os.Exit(1)
+	} else {
+		fmt.Println("Updated")
+	}
+}
+
+func deleteKey(ctx *cli.Context) {
+	if len(ctx.Args()) < 2 {
+		cli.ShowCommandHelp(ctx, "remove")
+		os.Exit(1)
+	}
+
+	path := ctx.Args().Get(0)
+	m, err := bpf.OpenMap(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to open map %s: %s\n", path, err)
+		os.Exit(1)
+	}
+
+	key, err := newByteValue(ctx.Args().Get(1), m.KeySize, m.ValueSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid key: %s\n", err)
+		os.Exit(1)
+	}
+
+	if err := m.Delete(key); err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to remove key: %s\n", err)
+		os.Exit(1)
+	} else {
+		fmt.Println("Removed")
+	}
 }
