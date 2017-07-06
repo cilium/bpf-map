@@ -16,7 +16,7 @@ Download the binary release:
 
 ```
 curl -SsL https://github.com/cilium/bpf-map/releases/download/v1.0/bpf-map -o bpf-map
-chod +x bpf-map
+chmod +x bpf-map
 ```
 
 ## Usage
