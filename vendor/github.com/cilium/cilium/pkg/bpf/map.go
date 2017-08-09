@@ -14,28 +14,22 @@
 
 package bpf
 
-/*
-#cgo CFLAGS: -I../../bpf/include
-#include <linux/unistd.h>
-#include <linux/bpf.h>
-#include <sys/resource.h>
-*/
-
-import "C"
-
 import (
-	"unsafe"
-
 	"bufio"
 	"fmt"
 	"os"
 	"path"
-	"syscall"
+	"sync"
+	"unsafe"
+
+	log "github.com/Sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
+// MapType is an enumeration for valid BPF map types
 type MapType int
 
-// This enumeration must be in sync with <linux/bpf.h>
+// This enumeration must be in sync with enum bpf_prog_type in <linux/bpf.h>
 const (
 	MapTypeUnspec MapType = iota
 	MapTypeHash
@@ -100,11 +94,12 @@ type MapValue interface {
 }
 
 type MapInfo struct {
-	MapType    MapType
-	KeySize    uint32
-	ValueSize  uint32
-	MaxEntries uint32
-	Flags      uint32
+	MapType       MapType
+	KeySize       uint32
+	ValueSize     uint32
+	MaxEntries    uint32
+	Flags         uint32
+	OwnerProgType ProgType
 }
 
 type Map struct {
@@ -112,30 +107,40 @@ type Map struct {
 	fd   int
 	name string
 	path string
+	once sync.Once
+	lock sync.RWMutex
+
+	// NonPersistent is true if the map does not contain persistent data
+	// and should be removed on startup.
+	NonPersistent bool
 }
 
-func NewMap(name string, mapType MapType, keySize int, valueSize int, maxEntries int) *Map {
+func NewMap(name string, mapType MapType, keySize int, valueSize int, maxEntries int, flags uint32) *Map {
 	return &Map{
 		MapInfo: MapInfo{
-			MapType:    mapType,
-			KeySize:    uint32(keySize),
-			ValueSize:  uint32(valueSize),
-			MaxEntries: uint32(maxEntries),
+			MapType:       mapType,
+			KeySize:       uint32(keySize),
+			ValueSize:     uint32(valueSize),
+			MaxEntries:    uint32(maxEntries),
+			Flags:         flags,
+			OwnerProgType: ProgTypeUnspec,
 		},
 		name: name,
 	}
+}
+
+// WithNonPersistent turns the map non-persistent and returns the map
+func (m *Map) WithNonPersistent() *Map {
+	m.NonPersistent = true
+	return m
 }
 
 func (m *Map) GetFd() int {
 	return m.fd
 }
 
-func (m *Map) DeepCopy() *Map {
-	cpy := *m
-	return &cpy
-}
-
 func GetMapInfo(pid int, fd int) (*MapInfo, error) {
+
 	fdinfoFile := fmt.Sprintf("/proc/%d/fdinfo/%d", pid, fd)
 
 	file, err := os.Open(fdinfoFile)
@@ -162,6 +167,8 @@ func GetMapInfo(pid int, fd int) (*MapInfo, error) {
 			info.MaxEntries = uint32(value)
 		} else if n, err := fmt.Sscanf(line, "map_flags:\t%x", &value); n == 1 && err == nil {
 			info.Flags = uint32(value)
+		} else if n, err := fmt.Sscanf(line, "owner_prog_type:\t%d", &value); n == 1 && err == nil {
+			info.OwnerProgType = ProgType(value)
 		}
 	}
 
@@ -216,7 +223,61 @@ func (m *Map) setPathIfUnset() error {
 	return nil
 }
 
+func (m *Map) migrate(fd int) (bool, error) {
+	info, err := GetMapInfo(os.Getpid(), fd)
+	if err != nil {
+		return false, nil
+	}
+
+	mismatch := false
+
+	if info.MapType != m.MapType {
+		log.Infof("Map type mismatch for BPF map %s: old: %d new: %d",
+			m.path, info.MapType, m.MapType)
+		mismatch = true
+	}
+
+	if info.KeySize != m.KeySize {
+		log.Infof("Key-size mismatch for BPF map %s: old: %d new: %d",
+			m.path, info.KeySize, m.KeySize)
+		mismatch = true
+	}
+
+	if info.ValueSize != m.ValueSize {
+		log.Infof("Value-size mismatch for BPF map %s: old: %d new: %d",
+			m.path, info.ValueSize, m.ValueSize)
+		mismatch = true
+	}
+
+	if info.MaxEntries != m.MaxEntries {
+		log.Infof("Max entries mismatch for BPF map %s: old: %d new: %d",
+			m.path, info.MaxEntries, m.MaxEntries)
+		mismatch = true
+	}
+
+	if info.Flags != m.Flags {
+		log.Infof("Flags mismatch for BPF map %s: old: %d new: %d",
+			m.path, info.Flags, m.Flags)
+		mismatch = true
+	}
+	if mismatch {
+		b, err := m.containsEntries()
+		if err == nil && !b {
+			log.Infof("Safely removing empty map %s so it can be recreated", m.path)
+			os.Remove(m.path)
+			return true, nil
+		}
+
+		return false, fmt.Errorf("could not resolve BPF map mismatch (see log for details)")
+	}
+
+	return false, nil
+}
+
 func (m *Map) OpenOrCreate() (bool, error) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
 	if m.fd != 0 {
 		return false, nil
 	}
@@ -225,38 +286,63 @@ func (m *Map) OpenOrCreate() (bool, error) {
 		return false, err
 	}
 
-	fd, isNew, err := OpenOrCreateMap(m.path, int(m.MapType), m.KeySize, m.ValueSize, m.MaxEntries)
+	// If the map represents non-persistent data, always remove the map
+	// before opening or creating.
+	if m.NonPersistent {
+		os.Remove(m.path)
+	}
+
+reopen:
+	fd, isNew, err := OpenOrCreateMap(m.path, int(m.MapType), m.KeySize, m.ValueSize, m.MaxEntries, m.Flags)
 	if err != nil {
 		return false, err
 	}
 
+	// Only persistent maps need to be migrated, non-persistent maps will
+	// have been deleted above before opening.
+	if !m.NonPersistent {
+		if retry, err := m.migrate(fd); err != nil {
+			if isNew {
+				os.Remove(m.path)
+			}
+			return false, err
+		} else if retry {
+			goto reopen
+		}
+	}
 	m.fd = fd
 
 	return isNew, nil
 }
 
 func (m *Map) Open() error {
-	if m.fd != 0 {
-		return nil
-	}
+	var err error
+	m.once.Do(func() {
+		if m.fd != 0 {
+			err = nil
+			return
+		}
 
-	if err := m.setPathIfUnset(); err != nil {
-		return err
-	}
+		if err = m.setPathIfUnset(); err != nil {
+			return
+		}
+		var fd int
+		fd, err = ObjGet(m.path)
+		if err != nil {
+			return
+		}
 
-	fd, err := ObjGet(m.path)
-	if err != nil {
-		return err
-	}
-
-	m.fd = fd
-
-	return nil
+		m.fd = fd
+	})
+	return err
 }
 
 func (m *Map) Close() error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
 	if m.fd != 0 {
-		syscall.Close(m.fd)
+		unix.Close(m.fd)
 		m.fd = 0
 	}
 
@@ -267,14 +353,15 @@ type DumpParser func(key []byte, value []byte) (MapKey, MapValue, error)
 type DumpCallback func(key MapKey, value MapValue)
 
 func (m *Map) Dump(parser DumpParser, cb DumpCallback) error {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
 	key := make([]byte, m.KeySize)
 	nextKey := make([]byte, m.KeySize)
 	value := make([]byte, m.ValueSize)
 
-	if m.fd == 0 {
-		if err := m.Open(); err != nil {
-			return err
-		}
+	if err := m.Open(); err != nil {
+		return err
 	}
 
 	for {
@@ -309,42 +396,73 @@ func (m *Map) Dump(parser DumpParser, cb DumpCallback) error {
 
 		copy(key, nextKey)
 	}
-
 	return nil
 }
 
+// containsEntries returns true if the map contains at least one entry
+// must hold map mutex
+func (m *Map) containsEntries() (bool, error) {
+	key := make([]byte, m.KeySize)
+	nextKey := make([]byte, m.KeySize)
+	value := make([]byte, m.ValueSize)
+
+	err := GetNextKey(
+		m.fd,
+		unsafe.Pointer(&key[0]),
+		unsafe.Pointer(&nextKey[0]),
+	)
+
+	if err != nil {
+		return false, nil
+	}
+
+	err = LookupElement(
+		m.fd,
+		unsafe.Pointer(&nextKey[0]),
+		unsafe.Pointer(&value[0]),
+	)
+
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
 func (m *Map) Lookup(key MapKey) (MapValue, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
 	value := key.NewValue()
 
-	if m.fd == 0 {
-		if err := m.Open(); err != nil {
-			return nil, err
-		}
+	if err := m.Open(); err != nil {
+		return nil, err
 	}
 
 	err := LookupElement(m.fd, key.GetKeyPtr(), value.GetValuePtr())
 	if err != nil {
 		return nil, err
 	}
-
 	return value, nil
 }
 
 func (m *Map) Update(key MapKey, value MapValue) error {
-	if m.fd == 0 {
-		if err := m.Open(); err != nil {
-			return err
-		}
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	if err := m.Open(); err != nil {
+		return err
 	}
 
 	return UpdateElement(m.fd, key.GetKeyPtr(), value.GetValuePtr(), 0)
 }
 
 func (m *Map) Delete(key MapKey) error {
-	if m.fd == 0 {
-		if err := m.Open(); err != nil {
-			return err
-		}
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	if err := m.Open(); err != nil {
+		return err
 	}
 
 	return DeleteElement(m.fd, key.GetKeyPtr())
@@ -354,13 +472,14 @@ func (m *Map) Delete(key MapKey) error {
 // entries. Note that if entries are added while the taversal is in progress,
 // such entries may survive the deletion process.
 func (m *Map) DeleteAll() error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
 	key := make([]byte, m.KeySize)
 	nextKey := make([]byte, m.KeySize)
 
-	if m.fd == 0 {
-		if err := m.Open(); err != nil {
-			return err
-		}
+	if err := m.Open(); err != nil {
+		return err
 	}
 
 	for {
@@ -383,4 +502,13 @@ func (m *Map) DeleteAll() error {
 	}
 
 	return nil
+}
+
+//GetNextKey returns the next key in the Map after key.
+func (m *Map) GetNextKey(key MapKey, nextKey MapKey) error {
+	if err := m.Open(); err != nil {
+		return err
+	}
+
+	return GetNextKey(m.fd, key.GetKeyPtr(), nextKey.GetKeyPtr())
 }

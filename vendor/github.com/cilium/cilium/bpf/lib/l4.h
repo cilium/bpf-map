@@ -53,7 +53,7 @@ static inline int l4_modify_port(struct __sk_buff *skb, int l4_off, int off,
 	if (csum_l4_replace(skb, l4_off, csum_off, old_port, port, sizeof(port)) < 0)
 		return DROP_CSUM_L4;
 
-        if (skb_store_bytes(skb, l4_off + off, &port, sizeof(port), 0) < 0)
+	if (skb_store_bytes(skb, l4_off + off, &port, sizeof(port), 0) < 0)
 		return DROP_WRITE_ERROR;
 
 	return 0;
@@ -79,7 +79,7 @@ static inline int l4_port_map_in(struct __sk_buff *skb, int l4_off,
 				 struct csum_offset *csum_off,
 				 struct portmap *map, __u16 dport)
 {
-	cilium_trace(skb, DBG_PORT_MAP, ntohs(map->from), ntohs(map->to));
+	cilium_trace(skb, DBG_PORT_MAP, bpf_ntohs(map->from), bpf_ntohs(map->to));
 
 	if (likely(map->from != dport))
 		return 0;
@@ -108,7 +108,7 @@ static inline int l4_port_map_out(struct __sk_buff *skb, int l4_off,
 				  struct csum_offset *csum_off,
 				  struct portmap *map, __u16 sport)
 {
-	cilium_trace(skb, DBG_PORT_MAP, ntohs(map->to), ntohs(map->from));
+	cilium_trace(skb, DBG_PORT_MAP, bpf_ntohs(map->to), bpf_ntohs(map->from));
 
 	if (likely(map->to != sport))
 		return 0;
@@ -142,42 +142,20 @@ struct l4_allow
 #ifdef CFG_L4_INGRESS
 static inline int __inline__ l4_ingress_embedded(__u16 dport, __u8 nexthdr)
 {
-	struct l4_allow allowed[] = CFG_L4_INGRESS;
-	int i;
+	int allowed = DROP_POLICY_L4;
 
-#pragma unroll
-	for (i = 0; i < ARRAY_SIZE(allowed); i++) {
-		if (allowed[i].nexthdr && allowed[i].nexthdr != nexthdr)
-			continue;
-
-		if (allowed[i].port && allowed[i].port != dport)
-			continue;
-
-		return allowed[i].proxy;
-	}
-
-	return DROP_POLICY_L4;
+	BPF_L4_MAP(allowed, dport, nexthdr, CFG_L4_INGRESS);
+	return allowed;
 }
 #endif
 
 #ifdef CFG_L4_EGRESS
 static inline int __inline__ l4_egress_embedded(__u16 dport, __u8 nexthdr)
 {
-	struct l4_allow allowed[] = CFG_L4_EGRESS;
-	int i;
+	int allowed = DROP_POLICY_L4;
 
-#pragma unroll
-	for (i = 0; i < ARRAY_SIZE(allowed); i++) {
-		if (allowed[i].nexthdr && allowed[i].nexthdr != nexthdr)
-			continue;
-
-		if (allowed[i].port && allowed[i].port != dport)
-			continue;
-
-		return allowed[i].proxy;
-	}
-
-	return DROP_POLICY_L4;
+	BPF_L4_MAP(allowed, dport, nexthdr, CFG_L4_EGRESS);
+	return allowed;
 }
 #endif
 
