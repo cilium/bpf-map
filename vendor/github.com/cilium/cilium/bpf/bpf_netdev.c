@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "lib/utils.h"
 #include "lib/common.h"
 #include "lib/maps.h"
 #include "lib/ipv6.h"
@@ -40,6 +41,7 @@
 #include "lib/l4.h"
 #include "lib/policy.h"
 #include "lib/drop.h"
+#include "lib/encap.h"
 
 static inline __u32 derive_sec_ctx(struct __sk_buff *skb, const union v6addr *node_ip,
 				   struct ipv6hdr *ip6)
@@ -50,23 +52,79 @@ static inline __u32 derive_sec_ctx(struct __sk_buff *skb, const union v6addr *no
 	if (ipv6_match_prefix_64((union v6addr *) &ip6->saddr, node_ip)) {
 		/* Read initial 4 bytes of header and then extract flowlabel */
 		__u32 *tmp = (__u32 *) ip6;
-		return ntohl(*tmp & IPV6_FLOWLABEL_MASK);
+		return bpf_ntohl(*tmp & IPV6_FLOWLABEL_MASK);
 	}
 
 	return WORLD_ID;
 #endif
 }
 
+static inline int __inline__
+reverse_proxy6(struct __sk_buff *skb, int l4_off, struct ipv6hdr *ip6, __u8 nh)
+{
+	struct proxy6_tbl_value *val;
+	struct proxy6_tbl_key key = {
+		.nexthdr = nh,
+	};
+	union v6addr new_saddr, old_saddr;
+	struct csum_offset csum = {};
+	__be16 new_sport, old_sport;
+	int ret;
+
+	switch (nh) {
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+		/* load sport + dport in reverse order, sport=dport, dport=sport */
+		if (skb_load_bytes(skb, l4_off, &key.dport, 4) < 0)
+			return DROP_CT_INVALID_HDR;
+		break;
+	default:
+		/* ignore */
+		return 0;
+	}
+
+	ipv6_addr_copy(&key.saddr, (union v6addr *) &ip6->daddr);
+	ipv6_addr_copy(&old_saddr, (union v6addr *) &ip6->saddr);
+	csum_l4_offset_and_flags(nh, &csum);
+
+	val = map_lookup_elem(&cilium_proxy6, &key);
+	if (!val)
+		return 0;
+
+	ipv6_addr_copy(&new_saddr, (union v6addr *)&val->orig_daddr);
+	new_sport = val->orig_dport;
+	old_sport = key.dport;
+
+	ret = l4_modify_port(skb, l4_off, TCP_SPORT_OFF, &csum, new_sport, old_sport);
+	if (ret < 0)
+		return DROP_WRITE_ERROR;
+
+	ret = ipv6_store_saddr(skb, new_saddr.addr, ETH_HLEN);
+	if (IS_ERR(ret))
+		return DROP_WRITE_ERROR;
+
+	if (csum.offset) {
+		__be32 sum = csum_diff(old_saddr.addr, 16, new_saddr.addr, 16, 0);
+
+		if (csum_l4_replace(skb, l4_off, &csum, 0, sum, BPF_F_PSEUDO_HDR) < 0)
+			return DROP_CSUM_L4;
+	}
+
+	return 0;
+}
+
 static inline int handle_ipv6(struct __sk_buff *skb)
 {
-	union v6addr node_ip = { . addr = ROUTER_IP };
+	union v6addr node_ip = { };
 	void *data = (void *) (long) skb->data;
 	void *data_end = (void *) (long) skb->data_end;
 	struct ipv6hdr *ip6 = data + ETH_HLEN;
 	union v6addr *dst = (union v6addr *) &ip6->daddr;
 	int l4_off, l3_off = ETH_HLEN;
+	struct endpoint_info *ep;
 	__u8 nexthdr;
 	__u32 flowlabel;
+	int ret;
 
 	if (data + l3_off + sizeof(*ip6) > data_end)
 		return DROP_INVALID;
@@ -82,10 +140,51 @@ static inline int handle_ipv6(struct __sk_buff *skb)
 	}
 #endif
 
-	flowlabel = derive_sec_ctx(skb, &node_ip, ip6);
+	BPF_V6(node_ip, ROUTER_IP);
 
-	if (likely(ipv6_match_prefix_96(dst, &node_ip)))
-		return ipv6_local_delivery(skb, l3_off, l4_off, flowlabel, ip6, nexthdr);
+	flowlabel = derive_sec_ctx(skb, &node_ip, ip6);
+#ifdef FROM_HOST
+	/* For packets from the host, the identity can be specified via skb->mark */
+	if (skb->mark) {
+		flowlabel = skb->mark;
+	}
+#endif
+
+	if (likely(ipv6_match_prefix_96(dst, &node_ip))) {
+		ret = reverse_proxy6(skb, l4_off, ip6, ip6->nexthdr);
+		if (IS_ERR(ret))
+			return ret;
+
+		data = (void *) (long) skb->data;
+		data_end = (void *) (long) skb->data_end;
+		ip6 = data + ETH_HLEN;
+		if (data + sizeof(*ip6) + ETH_HLEN > data_end)
+			return DROP_INVALID;
+
+		/* Lookup IPv4 address in list of local endpoints */
+		if ((ep = lookup_ip6_endpoint(ip6)) != NULL) {
+			/* Let through packets to the node-ip so they are
+			 * processed by the local ip stack */
+			if (ep->flags & ENDPOINT_F_HOST)
+				return TC_ACT_OK;
+
+			return ipv6_local_delivery(skb, l3_off, l4_off, flowlabel, ip6, nexthdr, ep);
+		} else {
+#ifdef ENCAP_IFINDEX
+			struct endpoint_key key = {};
+
+			/* IPv6 lookup key: daddr/96 */
+			dst = (union v6addr *) &ip6->daddr;
+			key.ip6.p1 = dst->p1;
+			key.ip6.p2 = dst->p2;
+			key.ip6.p3 = dst->p3;
+			key.ip6.p4 = 0;
+			key.family = ENDPOINT_KEY_IPV6;
+
+			return encap_and_redirect(skb, &key, flowlabel);
+#endif
+		}
+	}
 
 	return TC_ACT_OK;
 }
@@ -116,7 +215,7 @@ reverse_proxy(struct __sk_buff *skb, int l4_off, struct iphdr *ip4,
 	};
 	__be32 new_saddr, old_saddr = ip4->saddr;
 	__be16 new_sport, old_sport;
-	struct csum_offset csum;
+	struct csum_offset csum = {};
 
 	switch (tuple->nexthdr) {
 	case IPPROTO_TCP:
@@ -132,7 +231,8 @@ reverse_proxy(struct __sk_buff *skb, int l4_off, struct iphdr *ip4,
 
 	csum_l4_offset_and_flags(tuple->nexthdr, &csum);
 
-	cilium_trace(skb, DBG_REV_PROXY_LOOKUP, key.sport << 16 | key.dport, key.saddr);
+	cilium_trace3(skb, DBG_REV_PROXY_LOOKUP, key.sport << 16 | key.dport,
+		      key.saddr, key.nexthdr);
 
 	val = map_lookup_elem(&cilium_proxy4, &key);
 	if (!val)
@@ -142,7 +242,7 @@ reverse_proxy(struct __sk_buff *skb, int l4_off, struct iphdr *ip4,
 	new_sport = val->orig_dport;
 	old_sport = key.dport;
 
-	cilium_trace(skb, DBG_REV_PROXY_FOUND, new_saddr, ntohs(new_sport));
+	cilium_trace(skb, DBG_REV_PROXY_FOUND, new_saddr, bpf_ntohs(new_sport));
 	cilium_trace_capture(skb, DBG_CAPTURE_PROXY_PRE, 0);
 
 	if (l4_modify_port(skb, l4_off, TCP_SPORT_OFF, &csum, new_sport, old_sport) < 0)
@@ -174,14 +274,23 @@ static inline int handle_ipv4(struct __sk_buff *skb)
 
 #ifdef ENABLE_IPV4
 	/* Check if destination is within our cluster prefix */
-	if ((ip4->daddr & IPV4_MASK) == IPV4_RANGE) {
+	if ((ip4->daddr & IPV4_CLUSTER_MASK) == IPV4_CLUSTER_RANGE) {
 		struct ipv4_ct_tuple tuple = {};
+		struct endpoint_info *ep;
 		__u32 secctx;
 		int ret, l4_off;
 
 		l4_off = ETH_HLEN + ipv4_hdrlen(ip4);
 		secctx = derive_ipv4_sec_ctx(skb, ip4);
+#ifdef FROM_HOST
+		if (skb->mark) {
+			/* For packets from the host, the identity can be specified via skb->mark */
+			secctx = skb->mark;
+		}
+#endif
 		tuple.nexthdr = ip4->protocol;
+
+		cilium_trace(skb, DBG_NETDEV_IN_CLUSTER, secctx, 0);
 
 		ret = reverse_proxy(skb, l4_off, ip4, &tuple);
 		/* DIRECT PACKET READ INVALID */
@@ -194,9 +303,26 @@ static inline int handle_ipv4(struct __sk_buff *skb)
 		if (data + sizeof(*ip4) + ETH_HLEN > data_end)
 			return DROP_INVALID;
 
-		ret = ipv4_local_delivery(skb, ETH_HLEN, l4_off, secctx, ip4);
-		if (ret != DROP_NO_LXC)
-			return ret;
+		/* Lookup IPv4 address in list of local endpoints */
+		if ((ep = lookup_ip4_endpoint(ip4)) != NULL) {
+			/* Let through packets to the node-ip so they are
+			 * processed by the local ip stack */
+			if (ep->flags & ENDPOINT_F_HOST)
+				return TC_ACT_OK;
+
+			return ipv4_local_delivery(skb, ETH_HLEN, l4_off, secctx, ip4, ep);
+		} else {
+#ifdef ENCAP_IFINDEX
+			/* IPv4 lookup key: daddr & IPV4_MASK */
+			struct endpoint_key key = {};
+
+			key.ip4 = ip4->daddr & IPV4_MASK;
+			key.family = ENDPOINT_KEY_IPV4;
+
+			cilium_trace(skb, DBG_NETDEV_ENCAP4, key.ip4, secctx);
+			return encap_and_redirect(skb, &key, secctx);
+#endif
+		}
 	}
 #endif
 
@@ -225,7 +351,7 @@ int from_netdev(struct __sk_buff *skb)
 	cilium_trace_capture(skb, DBG_CAPTURE_FROM_NETDEV, skb->ingress_ifindex);
 
 	switch (skb->protocol) {
-	case __constant_htons(ETH_P_IPV6):
+	case bpf_htons(ETH_P_IPV6):
 		/* This is considered the fast path, no tail call */
 		ret = handle_ipv6(skb);
 
@@ -236,8 +362,8 @@ int from_netdev(struct __sk_buff *skb)
 		break;
 
 #ifdef ENABLE_IPV4
-	case __constant_htons(ETH_P_IP):
-		tail_call(skb, &cilium_calls, CILIUM_CALL_IPV4);
+	case bpf_htons(ETH_P_IP):
+		ep_tail_call(skb, CILIUM_CALL_IPV4);
 		/* We are not returning an error here to always allow traffic to
 		 * the stack in case maps have become unavailable.
 		 *
@@ -267,7 +393,7 @@ __section_tail(CILIUM_MAP_RES_POLICY, SECLABEL) int handle_policy(struct __sk_bu
 	__u32 src_label = skb->cb[CB_SRC_LABEL];
 	int ifindex = skb->cb[CB_IFINDEX];
 
-	if (policy_can_access(&POLICY_MAP, skb, src_label) != TC_ACT_OK) {
+	if (policy_can_access(&POLICY_MAP, skb, src_label, 0, NULL) != TC_ACT_OK) {
 		return send_drop_notify(skb, src_label, SECLABEL, 0,
 					ifindex, TC_ACT_SHOT);
 	} else {

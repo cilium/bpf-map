@@ -256,9 +256,9 @@ static inline int __inline__ __lb6_rev_nat(struct __sk_buff *skb, int l4_off,
 	}
 
 	if (flags & REV_NAT_F_TUPLE_SADDR) {
-		ipv6_addr_copy(&old_saddr, &tuple->addr);
-		ipv6_addr_copy(&tuple->addr, &nat->address);
-		new_saddr = tuple->addr.addr;
+		ipv6_addr_copy(&old_saddr, &tuple->saddr);
+		ipv6_addr_copy(&tuple->saddr, &nat->address);
+		new_saddr = tuple->saddr.addr;
 	} else {
 		if (ipv6_load_saddr(skb, ETH_HLEN, &old_saddr) < 0)
 			return DROP_INVALID;
@@ -318,9 +318,12 @@ static inline int __inline__ lb6_rev_nat(struct __sk_buff *skb, int l4_off,
  */
 static inline int __inline__ lb6_extract_key(struct __sk_buff *skb, struct ipv6_ct_tuple *tuple,
 					     int l4_off, struct lb6_key *key,
-					     struct csum_offset *csum_off)
+					     struct csum_offset *csum_off, int dir)
 {
-	ipv6_addr_copy(&key->address, &tuple->addr);
+	union v6addr *addr;
+
+	addr = (dir == CT_INGRESS) ? &tuple->saddr : &tuple->daddr;
+	ipv6_addr_copy(&key->address, addr);
 	csum_l4_offset_and_flags(tuple->nexthdr, csum_off);
 
 #ifdef LB_L4
@@ -411,17 +414,19 @@ static inline int __inline__ lb6_local(struct __sk_buff *skb, int l3_off, int l4
 				       struct ct_state *state)
 {
 	__u16 slave;
+	union v6addr *addr;
 
 	slave = lb6_select_slave(skb, key, svc->count, svc->weight);
 	if (!(svc = lb6_lookup_slave(skb, key, slave)))
 		return DROP_NO_SERVICE;
 
-	ipv6_addr_copy(&tuple->addr, &svc->target);
+	ipv6_addr_copy(&tuple->daddr, &svc->target);
+	addr = &tuple->daddr;
 
 	if (state)
 		state->rev_nat_index = svc->rev_nat_index;
 
-	return lb6_xlate(skb, &tuple->addr, tuple->nexthdr, l3_off, l4_off,
+	return lb6_xlate(skb, addr, tuple->nexthdr, l3_off, l4_off,
 			 csum_off, key, svc);
 }
 
@@ -443,8 +448,8 @@ static inline int __inline__ __lb4_rev_nat(struct __sk_buff *skb, int l3_off, in
 	}
 
 	if (flags & REV_NAT_F_TUPLE_SADDR) {
-		old_sip = tuple->addr;
-		tuple->addr = new_sip = nat->address;
+		old_sip = tuple->saddr;
+		tuple->saddr = new_sip = nat->address;
 	} else {
 		ret = skb_load_bytes(skb, l3_off + offsetof(struct iphdr, saddr), &old_sip, 4);
 		if (IS_ERR(ret))
@@ -474,7 +479,7 @@ static inline int __inline__ __lb4_rev_nat(struct __sk_buff *skb, int l3_off, in
 		sum = csum_diff(&old_dip, 4, &old_sip, 4, 0);
 
 		/* Update the tuple address which is representing the destination address */
-		tuple->addr = old_sip;
+		tuple->saddr = old_sip;
 	}
 
         ret = skb_store_bytes(skb, l3_off + offsetof(struct iphdr, saddr), &new_sip, 4, 0);
@@ -532,9 +537,9 @@ static inline int __inline__ lb4_rev_nat(struct __sk_buff *skb, int l3_off, int 
  */
 static inline int __inline__ lb4_extract_key(struct __sk_buff *skb, struct ipv4_ct_tuple *tuple,
 					     int l4_off, struct lb4_key *key,
-					     struct csum_offset *csum_off)
+					     struct csum_offset *csum_off, int dir)
 {
-	key->address = tuple->addr;
+	key->address = (dir == CT_INGRESS) ? tuple->saddr : tuple->daddr;
 	csum_l4_offset_and_flags(tuple->nexthdr, csum_off);
 
 #ifdef LB_L4
@@ -667,8 +672,12 @@ static inline int __inline__ lb4_local(struct __sk_buff *skb, int l3_off, int l4
 		new_saddr = IPV4_LOOPBACK;
 		state->loopback = 1;
 		state->addr = new_saddr;
+		state->svc_addr = saddr;
 	}
 #endif
+
+	if (!state->loopback)
+		tuple->daddr = svc->target;
 
 	return lb4_xlate(skb, &new_daddr, &new_saddr, &saddr,
 			 tuple->nexthdr, l3_off, l4_off, csum_off, key,

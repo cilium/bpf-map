@@ -14,84 +14,6 @@
 
 package bpf
 
-/*
-#cgo CFLAGS: -I../../bpf/include
-#include <linux/unistd.h>
-#include <linux/bpf.h>
-#include <sys/resource.h>
-
-#if !defined __NR_bpf && defined CI_BUILD
-#define __NR_bpf 1
-#endif
-
-static __u64 ptr_to_u64(const void *ptr)
-{
-	return (__u64) (unsigned long) ptr;
-}
-
-void create_bpf_create_map(enum bpf_map_type map_type, int key_size, int value_size,
-			   int max_entries, void *attr)
-{
-	union bpf_attr* ptr_bpf_attr;
-	ptr_bpf_attr = (union bpf_attr*)attr;
-	ptr_bpf_attr->map_type = map_type;
-	ptr_bpf_attr->key_size = key_size;
-	ptr_bpf_attr->value_size = value_size;
-	ptr_bpf_attr->max_entries = max_entries;
-}
-
-void create_bpf_update_elem(int fd, const void *key, const void *value,
-			    unsigned long long flags, void *attr)
-{
-	union bpf_attr* ptr_bpf_attr;
-	ptr_bpf_attr = (union bpf_attr*)attr;
-	ptr_bpf_attr->map_fd = fd;
-	ptr_bpf_attr->key = ptr_to_u64(key);
-	ptr_bpf_attr->value = ptr_to_u64(value);
-	ptr_bpf_attr->flags = flags;
-}
-
-void create_bpf_lookup_elem(int fd, const void *key, void *value, void *attr)
-{
-	union bpf_attr* ptr_bpf_attr;
-	ptr_bpf_attr = (union bpf_attr*)attr;
-	ptr_bpf_attr->map_fd = fd;
-	ptr_bpf_attr->key = ptr_to_u64(key);
-	ptr_bpf_attr->value = ptr_to_u64(value);
-}
-
-void create_bpf_delete_elem(int fd, const void *key, void *attr)
-{
-	union bpf_attr* ptr_bpf_attr;
-	ptr_bpf_attr = (union bpf_attr*)attr;
-	ptr_bpf_attr->map_fd = fd;
-	ptr_bpf_attr->key = ptr_to_u64(key);
-}
-
-void create_bpf_get_next_key(int fd, const void *key, void *next_key, void *attr)
-{
-	union bpf_attr* ptr_bpf_attr;
-	ptr_bpf_attr = (union bpf_attr*)attr;
-	ptr_bpf_attr->map_fd = fd;
-	ptr_bpf_attr->key = ptr_to_u64(key);
-	ptr_bpf_attr->next_key = ptr_to_u64(next_key);
-}
-
-void create_bpf_obj_pin(int fd, const char *pathname, void *attr)
-{
-	union bpf_attr* ptr_bpf_attr;
-	ptr_bpf_attr = (union bpf_attr*)attr;
-	ptr_bpf_attr->pathname = ptr_to_u64(pathname);
-	ptr_bpf_attr->bpf_fd = fd;
-}
-
-void create_bpf_obj_get(const char *pathname, void *attr)
-{
-	union bpf_attr* ptr_bpf_attr;
-	ptr_bpf_attr = (union bpf_attr*)attr;
-	ptr_bpf_attr->pathname = ptr_to_u64(pathname);
-}
-*/
 import "C"
 
 import (
@@ -99,25 +21,79 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
+)
+
+const (
+	// BPF map type constants. Must match enum bpf_map_type from linux/bpf.h
+	BPF_MAP_TYPE_UNSPEC           = 0
+	BPF_MAP_TYPE_HASH             = 1
+	BPF_MAP_TYPE_ARRAY            = 2
+	BPF_MAP_TYPE_PROG_ARRAY       = 3
+	BPF_MAP_TYPE_PERF_EVENT_ARRAY = 4
+	BPF_MAP_TYPE_PERCPU_HASH      = 5
+	BPF_MAP_TYPE_PERCPU_ARRAY     = 6
+	BPF_MAP_TYPE_STACK_TRACE      = 7
+	BPF_MAP_TYPE_CGROUP_ARRAY     = 8
+	BPF_MAP_TYPE_LRU_HASH         = 9
+	BPF_MAP_TYPE_LRU_PERCPU_HASH  = 10
+	BPF_MAP_TYPE_LPM_TRIE         = 11
+	BPF_MAP_TYPE_ARRAY_OF_MAPS    = 12
+	BPF_MAP_TYPE_HASH_OF_MAPS     = 13
+	BPF_MAP_TYPE_DEVMAP           = 14
+
+	// BPF syscall command constants. Must match enum bpf_cmd from linux/bpf.h
+	BPF_MAP_CREATE         = 0
+	BPF_MAP_LOOKUP_ELEM    = 1
+	BPF_MAP_UPDATE_ELEM    = 2
+	BPF_MAP_DELETE_ELEM    = 3
+	BPF_MAP_GET_NEXT_KEY   = 4
+	BPF_PROG_LOAD          = 5
+	BPF_OBJ_PIN            = 6
+	BPF_OBJ_GET            = 7
+	BPF_PROG_ATTACH        = 8
+	BPF_PROG_DETACH        = 9
+	BPF_PROG_TEST_RUN      = 10
+	BPF_PROG_GET_NEXT_ID   = 11
+	BPF_MAP_GET_NEXT_ID    = 12
+	BPF_PROG_GET_FD_BY_ID  = 13
+	BPF_MAP_GET_FD_BY_ID   = 14
+	BPF_OBJ_GET_INFO_BY_FD = 15
+
+	// Flags for BPF_MAP_UPDATE_ELEM. Must match values from linux/bpf.h
+	BPF_ANY     = 0
+	BPF_NOEXIST = 1
+	BPF_EXIST   = 2
+
+	BPF_F_NO_PREALLOC   = 1 << 0
+	BPF_F_NO_COMMON_LRU = 1 << 1
 )
 
 // CreateMap creates a Map of type mapType, with key size keySize, a value size of
 // valueSize and the maximum amount of entries of maxEntries.
 // mapType should be one of the bpf_map_type in "uapi/linux/bpf.h"
-func CreateMap(mapType int, keySize, valueSize, maxEntries uint32) (int, error) {
-	uba := C.union_bpf_attr{}
-	C.create_bpf_create_map(
-		C.enum_bpf_map_type(mapType),
-		C.int(keySize),
-		C.int(valueSize),
-		C.int(maxEntries),
-		unsafe.Pointer(&uba),
-	)
-	ret, _, err := syscall.Syscall(
-		C.__NR_bpf,
-		C.BPF_MAP_CREATE,
+func CreateMap(mapType int, keySize, valueSize, maxEntries, flags uint32) (int, error) {
+	// This struct must be in sync with union bpf_attr's anonymous struct
+	// used by the BPF_MAP_CREATE command
+	uba := struct {
+		mapType    uint32
+		keySize    uint32
+		valueSize  uint32
+		maxEntries uint32
+		mapFlags   uint32
+	}{
+		uint32(mapType),
+		keySize,
+		valueSize,
+		maxEntries,
+		flags,
+	}
+
+	ret, _, err := unix.Syscall(
+		unix.SYS_BPF,
+		BPF_MAP_CREATE,
 		uintptr(unsafe.Pointer(&uba)),
 		unsafe.Sizeof(uba),
 	)
@@ -128,23 +104,32 @@ func CreateMap(mapType int, keySize, valueSize, maxEntries uint32) (int, error) 
 	return 0, fmt.Errorf("Unable to create map: %s", err)
 }
 
+// This struct must be in sync with union bpf_attr's anonymous struct used by
+// BPF_MAP_*_ELEM commands
+type bpfAttrMapOpElem struct {
+	mapFd uint32
+	pad0  [4]byte
+	key   uint64
+	value uint64 // union: value or next_key
+	flags uint64
+}
+
 // UpdateElement updates the map in fd with the given value in the given key.
-// The flags can have the following values (if you include "uapi/linux/bpf.h"):
-// C.BPF_ANY to create new element or update existing;
-// C.BPF_NOEXIST to create new element if it didn't exist;
-// C.BPF_EXIST to update existing element.
+// The flags can have the following values:
+// bpf.BPF_ANY to create new element or update existing;
+// bpf.BPF_NOEXIST to create new element if it didn't exist;
+// bpf.BPF_EXIST to update existing element.
 func UpdateElement(fd int, key, value unsafe.Pointer, flags uint64) error {
-	uba := C.union_bpf_attr{}
-	C.create_bpf_update_elem(
-		C.int(fd),
-		key,
-		value,
-		C.ulonglong(flags),
-		unsafe.Pointer(&uba),
-	)
-	ret, _, err := syscall.Syscall(
-		C.__NR_bpf,
-		C.BPF_MAP_UPDATE_ELEM,
+	uba := bpfAttrMapOpElem{
+		mapFd: uint32(fd),
+		key:   uint64(uintptr(key)),
+		value: uint64(uintptr(value)),
+		flags: uint64(flags),
+	}
+
+	ret, _, err := unix.Syscall(
+		unix.SYS_BPF,
+		BPF_MAP_UPDATE_ELEM,
 		uintptr(unsafe.Pointer(&uba)),
 		unsafe.Sizeof(uba),
 	)
@@ -159,16 +144,15 @@ func UpdateElement(fd int, key, value unsafe.Pointer, flags uint64) error {
 // LookupElement looks up for the map value stored in fd with the given key. The value
 // is stored in the value unsafe.Pointer.
 func LookupElement(fd int, key, value unsafe.Pointer) error {
-	uba := C.union_bpf_attr{}
-	C.create_bpf_lookup_elem(
-		C.int(fd),
-		key,
-		value,
-		unsafe.Pointer(&uba),
-	)
-	ret, _, err := syscall.Syscall(
-		C.__NR_bpf,
-		C.BPF_MAP_LOOKUP_ELEM,
+	uba := bpfAttrMapOpElem{
+		mapFd: uint32(fd),
+		key:   uint64(uintptr(key)),
+		value: uint64(uintptr(value)),
+	}
+
+	ret, _, err := unix.Syscall(
+		unix.SYS_BPF,
+		BPF_MAP_LOOKUP_ELEM,
 		uintptr(unsafe.Pointer(&uba)),
 		unsafe.Sizeof(uba),
 	)
@@ -182,15 +166,13 @@ func LookupElement(fd int, key, value unsafe.Pointer) error {
 
 // DeleteElement deletes the map element with the given key.
 func DeleteElement(fd int, key unsafe.Pointer) error {
-	uba := C.union_bpf_attr{}
-	C.create_bpf_delete_elem(
-		C.int(fd),
-		key,
-		unsafe.Pointer(&uba),
-	)
-	ret, _, err := syscall.Syscall(
-		C.__NR_bpf,
-		C.BPF_MAP_DELETE_ELEM,
+	uba := bpfAttrMapOpElem{
+		mapFd: uint32(fd),
+		key:   uint64(uintptr(key)),
+	}
+	ret, _, err := unix.Syscall(
+		unix.SYS_BPF,
+		BPF_MAP_DELETE_ELEM,
 		uintptr(unsafe.Pointer(&uba)),
 		unsafe.Sizeof(uba),
 	)
@@ -204,16 +186,14 @@ func DeleteElement(fd int, key unsafe.Pointer) error {
 
 // GetNextKey stores, in nextKey, the next key after the key of the map in fd.
 func GetNextKey(fd int, key, nextKey unsafe.Pointer) error {
-	uba := C.union_bpf_attr{}
-	C.create_bpf_get_next_key(
-		C.int(fd),
-		key,
-		nextKey,
-		unsafe.Pointer(&uba),
-	)
-	ret, _, err := syscall.Syscall(
-		C.__NR_bpf,
-		C.BPF_MAP_GET_NEXT_KEY,
+	uba := bpfAttrMapOpElem{
+		mapFd: uint32(fd),
+		key:   uint64(uintptr(key)),
+		value: uint64(uintptr(nextKey)),
+	}
+	ret, _, err := unix.Syscall(
+		unix.SYS_BPF,
+		BPF_MAP_GET_NEXT_KEY,
 		uintptr(unsafe.Pointer(&uba)),
 		unsafe.Sizeof(uba),
 	)
@@ -225,14 +205,25 @@ func GetNextKey(fd int, key, nextKey unsafe.Pointer) error {
 	return nil
 }
 
+// This struct must be in sync with union bpf_attr's anonymous struct used by
+// BPF_OBJ_*_ commands
+type bpfAttrObjOp struct {
+	pathname uint64
+	fd       uint32
+	pad0     [4]byte
+}
+
 // ObjPin stores the map's fd in pathname.
 func ObjPin(fd int, pathname string) error {
 	pathStr := C.CString(pathname)
-	uba := C.union_bpf_attr{}
-	C.create_bpf_obj_pin(C.int(fd), pathStr, unsafe.Pointer(&uba))
-	ret, _, err := syscall.Syscall(
-		C.__NR_bpf,
-		C.BPF_OBJ_PIN,
+	uba := bpfAttrObjOp{
+		pathname: uint64(uintptr(unsafe.Pointer(pathStr))),
+		fd:       uint32(fd),
+	}
+
+	ret, _, err := unix.Syscall(
+		unix.SYS_BPF,
+		BPF_OBJ_PIN,
 		uintptr(unsafe.Pointer(&uba)),
 		unsafe.Sizeof(uba),
 	)
@@ -247,34 +238,43 @@ func ObjPin(fd int, pathname string) error {
 // ObjGet reads the pathname and returns the map's fd read.
 func ObjGet(pathname string) (int, error) {
 	pathStr := C.CString(pathname)
-	uba := C.union_bpf_attr{}
-	C.create_bpf_obj_get(pathStr, unsafe.Pointer(&uba))
+	uba := bpfAttrObjOp{
+		pathname: uint64(uintptr(unsafe.Pointer(pathStr))),
+	}
 
-	fd, _, err := syscall.Syscall(
-		C.__NR_bpf,
-		C.BPF_OBJ_GET,
+	fd, _, err := unix.Syscall(
+		unix.SYS_BPF,
+		BPF_OBJ_GET,
 		uintptr(unsafe.Pointer(&uba)),
 		unsafe.Sizeof(uba),
 	)
 
 	if fd == 0 || err != 0 {
-		return 0, fmt.Errorf("Unable to get object: %s", err)
+		return 0, fmt.Errorf("Unable to get object %s: %s", pathname, err)
 	}
 
 	return int(fd), nil
 }
 
-func OpenOrCreateMap(path string, mapType int, keySize, valueSize, maxEntries uint32) (int, bool, error) {
+// ObjClose closes the map's fd.
+func ObjClose(fd int) error {
+	if fd > 0 {
+		return unix.Close(fd)
+	}
+	return nil
+}
+
+func OpenOrCreateMap(path string, mapType int, keySize, valueSize, maxEntries, flags uint32) (int, bool, error) {
 	var fd int
 
 	isNewMap := false
 
-	rl := syscall.Rlimit{
+	rl := unix.Rlimit{
 		Cur: math.MaxUint64,
 		Max: math.MaxUint64,
 	}
 
-	err := syscall.Setrlimit(C.RLIMIT_MEMLOCK, &rl)
+	err := unix.Setrlimit(unix.RLIMIT_MEMLOCK, &rl)
 	if err != nil {
 		return 0, isNewMap, fmt.Errorf("Unable to increase rlimit: %s", err)
 	}
@@ -292,7 +292,16 @@ func OpenOrCreateMap(path string, mapType int, keySize, valueSize, maxEntries ui
 			keySize,
 			valueSize,
 			maxEntries,
+			flags,
 		)
+
+		defer func() {
+			if err != nil {
+				// In case of error, we need to close
+				// this fd since it was open by CreateMap
+				ObjClose(fd)
+			}
+		}()
 
 		isNewMap = true
 
@@ -304,8 +313,26 @@ func OpenOrCreateMap(path string, mapType int, keySize, valueSize, maxEntries ui
 		if err != nil {
 			return 0, isNewMap, err
 		}
+
+		return fd, isNewMap, nil
 	}
 
 	fd, err = ObjGet(path)
 	return fd, isNewMap, err
+}
+
+// GetMtime returns monotonic time that can be used to compare
+// values with ktime_get_ns() BPF helper, e.g. needed to check
+// the timeout in sec for BPF entries. We return the raw nsec,
+// although that is not quite usable for comparison. Go has
+// runtime.nanotime() but doesn't expose it as API.
+func GetMtime() (uint64, error) {
+	var ts unix.Timespec
+
+	err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts)
+	if err != nil {
+		return 0, fmt.Errorf("Unable get time: %s", err)
+	}
+
+	return uint64(unix.TimespecToNsec(ts)), nil
 }

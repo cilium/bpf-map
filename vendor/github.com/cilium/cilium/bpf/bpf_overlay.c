@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "lib/utils.h"
 #include "lib/common.h"
 #include "lib/maps.h"
 #include "lib/ipv6.h"
@@ -38,10 +39,9 @@ static inline int handle_ipv6(struct __sk_buff *skb)
 	void *data_end = (void *) (long) skb->data_end;
 	void *data = (void *) (long) skb->data;
 	struct ipv6hdr *ip6 = data + ETH_HLEN;
-	union v6addr *dst = (union v6addr *) &ip6->daddr;
 	struct bpf_tunnel_key key = {};
+	struct endpoint_info *ep;
 	int l4_off, l3_off = ETH_HLEN;
-	__u32 node_id;
 
 	if (data + sizeof(*ip6) + l3_off > data_end)
 		return DROP_INVALID;
@@ -66,15 +66,39 @@ static inline int handle_ipv6(struct __sk_buff *skb)
 	}
 #endif
 
-	node_id = ipv6_derive_node_id(dst);
+	/* Lookup IPv6 address in list of local endpoints */
+	if ((ep = lookup_ip6_endpoint(ip6)) != NULL) {
+		/* Let through packets to the node-ip so they are
+		 * processed by the local ip stack */
+		if (ep->flags & ENDPOINT_F_HOST)
+			goto to_host;
 
-	if (unlikely(node_id != NODE_ID))
-		return DROP_NON_LOCAL;
-	else {
 		__u8 nexthdr = ip6->nexthdr;
 		l4_off = l3_off + ipv6_hdrlen(skb, l3_off, &nexthdr);
-		return ipv6_local_delivery(skb, l3_off, l4_off, key.tunnel_id, ip6, nexthdr);
+		return ipv6_local_delivery(skb, l3_off, l4_off, key.tunnel_id, ip6, nexthdr, ep);
+	} else {
+		return DROP_NON_LOCAL;
 	}
+
+to_host:
+#ifdef HOST_IFINDEX
+	if (1) {
+		union macaddr host_mac = HOST_IFINDEX_MAC;
+		union macaddr router_mac = NODE_MAC;
+		int ret;
+
+		cilium_trace(skb, DBG_TO_HOST, is_policy_skip(skb), 0);
+
+		ret = ipv6_l3(skb, ETH_HLEN, (__u8 *) &router_mac.addr, (__u8 *) &host_mac.addr);
+		if (ret != TC_ACT_OK)
+			return ret;
+
+		cilium_trace_capture(skb, DBG_CAPTURE_DELIVERY, HOST_IFINDEX);
+		return redirect(HOST_IFINDEX, 0);
+	}
+#else
+	return TC_ACT_OK;
+#endif
 }
 
 #ifdef ENABLE_IPV4
@@ -84,6 +108,7 @@ static inline int handle_ipv4(struct __sk_buff *skb)
 	void *data_end = (void *) (long) skb->data_end;
 	void *data = (void *) (long) skb->data;
 	struct iphdr *ip4 = data + ETH_HLEN;
+	struct endpoint_info *ep;
 	struct bpf_tunnel_key key = {};
 	int l4_off;
 
@@ -95,10 +120,37 @@ static inline int handle_ipv4(struct __sk_buff *skb)
 
 	l4_off = ETH_HLEN + ipv4_hdrlen(ip4);
 
-	if (unlikely((ip4->daddr & IPV4_MASK) != IPV4_RANGE))
+	/* Lookup IPv4 address in list of local endpoints */
+	if ((ep = lookup_ip4_endpoint(ip4)) != NULL) {
+		/* Let through packets to the node-ip so they are
+		 * processed by the local ip stack */
+		if (ep->flags & ENDPOINT_F_HOST)
+			goto to_host;
+
+		return ipv4_local_delivery(skb, ETH_HLEN, l4_off, key.tunnel_id, ip4, ep);
+	} else {
 		return DROP_NON_LOCAL;
-	else
-		return ipv4_local_delivery(skb, ETH_HLEN, l4_off, key.tunnel_id, ip4);
+	}
+
+to_host:
+#ifdef HOST_IFINDEX
+	if (1) {
+		union macaddr host_mac = HOST_IFINDEX_MAC;
+		union macaddr router_mac = NODE_MAC;
+		int ret;
+
+		cilium_trace(skb, DBG_TO_HOST, is_policy_skip(skb), 0);
+
+		ret = ipv4_l3(skb, ETH_HLEN, (__u8 *) &router_mac.addr, (__u8 *) &host_mac.addr, ip4);
+		if (ret != TC_ACT_OK)
+			return ret;
+
+		cilium_trace_capture(skb, DBG_CAPTURE_DELIVERY, HOST_IFINDEX);
+		return redirect(HOST_IFINDEX, 0);
+	}
+#else
+	return TC_ACT_OK;
+#endif
 }
 
 __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4) int tail_handle_ipv4(struct __sk_buff *skb)
@@ -123,14 +175,14 @@ int from_overlay(struct __sk_buff *skb)
 	cilium_trace_capture(skb, DBG_CAPTURE_FROM_OVERLAY, skb->ingress_ifindex);
 
 	switch (skb->protocol) {
-	case __constant_htons(ETH_P_IPV6):
+	case bpf_htons(ETH_P_IPV6):
 		/* This is considered the fast path, no tail call */
 		ret = handle_ipv6(skb);
 		break;
 
-	case __constant_htons(ETH_P_IP):
+	case bpf_htons(ETH_P_IP):
 #ifdef ENABLE_IPV4
-		tail_call(skb, &cilium_calls, CILIUM_CALL_IPV4);
+		ep_tail_call(skb, CILIUM_CALL_IPV4);
 		ret = DROP_MISSED_TAIL_CALL;
 #else
 		ret = DROP_UNKNOWN_L3;
@@ -161,7 +213,7 @@ __section_tail(CILIUM_MAP_RES_POLICY, SECLABEL) int handle_policy(struct __sk_bu
 	__u32 src_label = skb->cb[CB_SRC_LABEL];
 	int ifindex = skb->cb[CB_IFINDEX];
 
-	if (policy_can_access(&POLICY_MAP, skb, src_label) != TC_ACT_OK) {
+	if (policy_can_access(&POLICY_MAP, skb, src_label, 0, NULL) != TC_ACT_OK) {
 		return send_drop_notify(skb, src_label, SECLABEL, 0,
 					ifindex, TC_ACT_SHOT);
 	} else {
