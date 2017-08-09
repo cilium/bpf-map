@@ -12,7 +12,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//
+
 package main
 
 import (
@@ -104,6 +104,8 @@ func infoMap(ctx *cli.Context) {
 
 	fmt.Printf("Type:\t\t%s\nKey size:\t%d\nValue size:\t%d\nMax entries:\t%d\nFlags:\t\t%#x\n",
 		m.MapType.String(), m.KeySize, m.ValueSize, m.MaxEntries, m.Flags)
+
+	fmt.Printf("Owner prog type:\t%s\n", m.OwnerProgType.String())
 }
 
 func updateMap(ctx *cli.Context) {
