@@ -1,5 +1,7 @@
 # bpf-map
 
+**Archived:** This tool has been superseded by bpftool.
+
 A small tool to generically introspect BPF maps without requiring to be aware
 of the specific data structures stored inside. Can print the metadata of the
 map or its contents in hexadecimal form.
